@@ -1,9 +1,3 @@
-# This is a sample Python script.
-
-# Press ⌃R to execute it or replace it with your code.
-# Press Double ⇧ to search everywhere for classes, files, tool windows, actions, and settings.
-
-
 from flask import Flask, request, request, redirect, render_template_string
 #import requests
 import httpx
@@ -11,7 +5,6 @@ from bs4 import BeautifulSoup
 import logging
 import re
 from urllib.parse import parse_qs
-# HTML template for the custom embed page
 OG_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -34,7 +27,7 @@ OG_TEMPLATE = """
 """
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.CRITICAL)
+logging.basicConfig(level=logging.DEBUG)
 
 def fetch_with_httpx(dcinside_url):
     headers = {
@@ -84,4 +77,3 @@ def generate_embed():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=52300)
-
