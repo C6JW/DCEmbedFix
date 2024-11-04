@@ -22,15 +22,28 @@ intents.guilds = True
 intents.guild_messages = True
 client = discord.Client(intents=intents)
 
-pattern = r"(https?://(?:gall|m|enter)\.dcinside\.com/[^ ?]+(?:\?id=[^ &]+&no=[^ &]*)?)(?:\?recommend=\d+)?(?:&s_type=[^ &]+&s_keyword=[^ &]*&page=\d+)?"
+pattern = r"""
+    (https?://(?:gall|m|enter)\.dcinside\.com/           # Match the base URL
+    (?:board/view/\?id=[^ &]+&no=(\d+)|                   # Match the view with query parameters
+    board/[^/]+/\d+|                                     # Match mobile URLs with board name and post number
+    board/view/\?id=[^ &]+)                              # Match the view with just id and no
+    )
+"""
 
 def modify_links(message_content):
     modified_message = re.sub(
         pattern,
-        lambda match: f"[{match.group(1).replace('https://', '').replace('http://', '')}]({SERVER_DOMAIN}{match.group(1)})",
+        lambda match: f"[{match.group(1).replace('https://', '').replace('http://', '')}]({SERVER_DOMAIN}{clean_up_url(match.group(0))})",
         message_content
     )
+    print(re.sub(pattern, lambda match: f"[{match.group(1).replace('https://', '').replace('http://', '')}]({SERVER_DOMAIN}{match.group(1)})", message_content))
     return modified_message
+#lambda match: f"[{match.group(1).replace('https://', '').replace('http://', '')}]({SERVER_DOMAIN}{match.group(1)})",
+
+def clean_up_url(url):
+    clean_url = re.sub(r"(\?id=[^ &]+&no=\d+).*", r"\1", url)  # Keep only the id and no parameters if in query
+    clean_url = re.sub(r"(\d+)(\?.*)?", r"\1", clean_url)  # If it's a mobile URL with just the post number
+    return clean_url
 
 async def fetch_avatar_bytes(url):
     async with aiohttp.ClientSession() as session:
