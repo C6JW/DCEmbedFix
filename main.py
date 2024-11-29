@@ -1,21 +1,18 @@
-from flask import Flask, request, request, redirect, render_template_string
-import discord
-from discord import Webhook
-from discord_webhook import DiscordWebhook
-from aiohttp.hdrs import SERVER
-from discord.ext import commands
-import re
 import os
-from dotenv import load_dotenv
+import discord
+from discord.ext import commands
+from discord import Webhook
+from flask import Flask, request, redirect, render_template_string
 import requests
 import aiohttp
 import asyncio
 import tempfile
 import json
-from bs4 import BeautifulSoup
 import httpx
 from bs4 import BeautifulSoup
 import logging
+from dotenv import load_dotenv
+from playwright.async_api import async_playwright
 
 load_dotenv()
 
@@ -32,12 +29,14 @@ client = discord.Client(intents=intents)
 app = Flask(__name__)
 logging.basicConfig(level=logging.CRITICAL)
 
+
 async def fetch_avatar_bytes(url):
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:
             if response.status == 200:
                 return await response.read()
             return None
+
 
 async def ensure_webhook(channel):
     if channel.permissions_for(channel.guild.me).manage_webhooks:
@@ -48,56 +47,55 @@ async def ensure_webhook(channel):
             bot_webhook = await channel.create_webhook(name="DCEmbedFixer")
         return bot_webhook
 
-def fetch_with_httpx(url):
+
+# Make this an async function by using httpx.AsyncClient
+async def fetch_with_httpx(url):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.82 Safari/537.36'
     }
     try:
-        with httpx.Client(verify=False, follow_redirects=True) as client:
-            response = client.get(url, headers=headers, timeout=5)
+        async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers, timeout=5)
             response.raise_for_status()
         return response.text
     except httpx.RequestError as e:
         logging.error(f"Failed to retrieve the page: {e}")
         return None
 
-@client.event
-async def on_message(message):
-    if message.author == client.user or message.webhook_id is not None:
-        return
 
-    webhook = await ensure_webhook(message.channel)
+async def get_og_url(url):
+    # First, try fetching the page content using httpx
+    page_content = await fetch_with_httpx(url)
+
+    # Parse the page content using BeautifulSoup
+    soup = BeautifulSoup(page_content, 'html.parser')
+
+    # Look for the Open Graph URL (og:url) meta tag
+    og_url = soup.find("meta", property="og:url")
+
+    # If we find the og:url, return it; otherwise, fall back to Playwright to get the final URL
+    if og_url:
+        return og_url["content"]
+    else:
+        print("OG URL not found")
+        # If OG URL not found, use Playwright to resolve the final URL
+        return await get_final_url_with_playwright(url)
 
 
+# Fetch the final URL using Playwright (in case there's a redirect)
+async def get_final_url_with_playwright(url):
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            page = await browser.new_page()
+            await page.goto(url)
+            final_url = page.url
+            await browser.close()
+        return final_url
+    except Exception as e:
+        logging.error(f"Failed to resolve final URL using Playwright: {e}")
+        return url  # Return original URL if something fails
 
-    if ".dcinside.com" in message.content:
-        urls = [part for part in message.content.split() if ".dcinside.com" in part]
-        url = urls[0]
-        page_content = fetch_with_httpx(url)
-        soup = BeautifulSoup(page_content, 'html.parser')
-        title = soup.find('title').text if soup.find('title') else "No Title"
-        description = soup.find('meta', {'name': 'description'})['content'] if soup.find('meta', {
-            'name': 'description'}) else "No Description"
-        #image = soup.find('meta', {'property': 'og:image'})['content'] if soup.find('meta', {
-            #'property': 'og:image'}) else "https://static.wikia.nocookie.net/joke-battles/images/d/df/Gigachad.png/revision/latest/scale-to-width-down/340?cb=20230812064835"
-        appending_file = soup.find(class_='appending_file')
-        if appending_file:
-            first_link = appending_file.find('a', href=True)['href']
-            print(first_link)
-            image=first_link
-
-        username = message.author.display_name
-        avatar_url = message.author.avatar.url if message.author.avatar else None
-        files = await process_attachments(message.attachments)
-
-        embed = discord.Embed(
-            title=title,
-            url=url,
-            description=description
-        )
-
-        await send_webhook_message(webhook, message.content, username, avatar_url, files, embed, image=None)
-        await message.delete()
 
 async def process_attachments(attachments):
     files = []
@@ -111,6 +109,7 @@ async def process_attachments(attachments):
                     files.append(discord.File(temp_file.name, filename=attachment.filename))
     return files
 
+
 async def send_webhook_message(target_webhook, content, username, avatar_url, files, embed, image):
     form_data = aiohttp.FormData()  # Create a FormData object
     payload = {
@@ -120,7 +119,7 @@ async def send_webhook_message(target_webhook, content, username, avatar_url, fi
             "url": embed.url,
             "description": embed.description,
             "image": {
-                "url": image
+                "url": "https://nstatic.dcinside.com/dc/w/images/logo_icon.ico"
             }
         }] if embed else [],
         "username": username,
@@ -139,6 +138,47 @@ async def send_webhook_message(target_webhook, content, username, avatar_url, fi
     for file in files:
         file.close()
         os.remove(file.fp.name)
+
+
+@client.event
+async def on_message(message):
+    if message.author == client.user or message.webhook_id is not None:
+        return
+
+    if ".dcinside.com" in message.content:
+        urls = [part for part in message.content.split() if ".dcinside.com" in part]
+        url = urls[0]
+
+        # Get OG URL (using httpx first, fallback to Playwright if necessary)
+        og_url = await get_og_url(url)
+        url = og_url
+
+        page_content = await fetch_with_httpx(og_url)
+        soup = BeautifulSoup(page_content, 'html.parser')
+
+        title = soup.find('title').text if soup.find('title') else "No Title"
+        description = soup.find('meta', {'name': 'description'})['content'] if soup.find('meta', {
+            'name': 'description'}) else "No Description"
+
+        appending_file = soup.find(class_='appending_file')
+        image = None
+        if appending_file:
+            first_link = appending_file.find('a', href=True)['href']
+            image = first_link
+
+        username = message.author.display_name
+        avatar_url = message.author.avatar.url if message.author.avatar else None
+        files = await process_attachments(message.attachments)
+
+        embed = discord.Embed(
+            title=title,
+            url=og_url,
+            description=description
+        )
+
+        webhook = await ensure_webhook(message.channel)
+        await send_webhook_message(webhook, message.content, username, avatar_url, files, embed, image=None)
+        await message.delete()
 
 
 client.run(TOKEN)
