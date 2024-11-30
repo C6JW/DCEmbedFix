@@ -29,6 +29,7 @@ client = discord.Client(intents=intents)
 app = Flask(__name__)
 logging.basicConfig(level=logging.CRITICAL)
 
+message_author_map = {}
 
 async def fetch_avatar_bytes(url):
     async with aiohttp.ClientSession() as session:
@@ -132,13 +133,14 @@ async def send_webhook_message(target_webhook, content, username, avatar_url, fi
         form_data.add_field(f"file{i}", open(file.fp.name, 'rb'), filename=file.filename)
 
     async with aiohttp.ClientSession() as session:
-        await session.post(target_webhook.url, data=form_data)
-
-    # Cleanup temporary files
-    for file in files:
-        file.close()
-        os.remove(file.fp.name)
-
+        async with session.post(target_webhook.url, data=form_data) as response:
+            if response.status == 204:
+                # Fetch the last sent message for tracking
+                async for msg in target_webhook.channel.history(limit=1):
+                    return msg  # Return the last sent message
+            else:
+                raise Exception(f"Failed to send message via webhook: {response.status}")
+    return None
 
 @client.event
 async def on_message(message):
@@ -177,8 +179,28 @@ async def on_message(message):
         )
 
         webhook = await ensure_webhook(message.channel)
-        await send_webhook_message(webhook, message.content, username, avatar_url, files, embed, image=None)
+        sent_message = await send_webhook_message(webhook, message.content, username, avatar_url, files, embed, image=None)
         await message.delete()
+        if sent_message:
+            message_author_map[sent_message.id] = message.author.id
+            await sent_message.add_reaction("❌")
+
+
+@client.event
+async def on_raw_reaction_add(payload):
+    if payload.emoji.name == "❌":  # Check for the 'X' emoji
+        message_id = payload.message_id
+        user_id = payload.user_id
+
+        # Check if the message is in the map and the reacting user is the original author
+        if message_id in message_author_map and message_author_map[message_id] == user_id:
+            channel = client.get_channel(payload.channel_id)
+            if channel:
+                message = await channel.fetch_message(message_id)
+                if message:
+                    await message.delete()
+                    del message_author_map[message_id]  # Remove entry from the map
 
 
 client.run(TOKEN)
+
